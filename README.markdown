@@ -8,6 +8,8 @@ One you have Go installed, run:
     % 6g crlset.go
     % 6l -o crlset crlset.6
 
+(In the future `6g` might change to `go tool 6g` and likewise with `6l`.)
+
 First you need to download the current CRL set:
 
     % ./crlset fetch > crl-set
@@ -17,6 +19,8 @@ Then you can dump everything in the CRL set:
 
     % ./crlset dump crl-set
 
-Or you can list only the serials issued under a given certificate:
+Revocations are grouped by the SHA-256 hash of the issuing certificate's SubjectPublicKeyInfo and listed as serial numbers.
+
+You can also list only the serials issued under a given certificate:
 
     % ./crlset dump crl-set my-ca-cert.pem

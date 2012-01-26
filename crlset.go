@@ -93,12 +93,16 @@ func fetch() bool {
 	}
 
 	var reply update
-	if err := xml.Unmarshal(resp.Body, &reply); err != nil {
-		resp.Body.Close()
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read version reply: %s\n", err)
 		return false
 	}
-	resp.Body.Close()
+	if err := xml.Unmarshal(bodyBytes, &reply); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse version reply: %s\n", err)
+		return false
+	}
 
 	var crxURL, version string
 	for _, app := range reply.Apps {
