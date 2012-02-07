@@ -5,8 +5,7 @@ crlset is a utility program for downloading and dumping the current Chrome CRLSe
 
 One you have Go installed, run:
 
-    % go tool 6g crlset.go
-    % go tool 6l -o crlset crlset.6
+    % go build crlset.go
 
 First you need to download the current CRL set:
 
