@@ -12,11 +12,15 @@ First you need to download the current CRL set:
     % ./crlset fetch > crl-set
     Downloading CRLSet version 59
 
-Then you can dump everything in the CRL set:
+Then you can dump the contents of the CRL set:
 
     % ./crlset dump crl-set
 
 Revocations are grouped by the SHA-256 hash of the issuing certificate's SubjectPublicKeyInfo and listed as serial numbers.
+
+To also show SPKIs that have been blocked:
+
+    % ./crlset dumpSPKIs crl-set
 
 You can also list only the serials issued under a given certificate:
 
