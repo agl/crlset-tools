@@ -13,7 +13,9 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"encoding/xml"
@@ -232,11 +234,17 @@ func fetch() bool {
 
 // crlSetHeader is used to parse the JSON header found in CRLSet files.
 type crlSetHeader struct {
-	Sequence   int
-	NumParents int
+	Sequence     int
+	NumParents   int
+	BlockedSPKIs []string
 }
 
-func dump(filename string, certificateFilename string) bool {
+func dump(filename, certificateFilename string) bool {
+	header, c, ok := getHeader(filename)
+	if !ok {
+		return false
+	}
+
 	var spki []byte
 	if len(certificateFilename) > 0 {
 		certBytes, err := ioutil.ReadFile(certificateFilename)
@@ -263,42 +271,14 @@ func dump(filename string, certificateFilename string) bool {
 		spki = h.Sum(nil)
 	}
 
-	c, err := ioutil.ReadFile(filename)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to read CRLSet: %s\n", err)
-		return false
-	}
-
-	if len(c) < 2 {
-		fmt.Fprintf(os.Stderr, "CRLSet truncated at header length\n")
-		return false
-	}
-
-	headerLen := int(c[0]) | int(c[1])<<8
-	c = c[2:]
-
-	if len(c) < headerLen {
-		fmt.Fprintf(os.Stderr, "CRLSet truncated at header\n")
-		return false
-	}
-	headerBytes := c[:headerLen]
-	c = c[headerLen:]
-
-	var header crlSetHeader
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse header: %s", err)
-		return false
-	}
-
 	if len(spki) == 0 {
 		fmt.Printf("Sequence: %d\n", header.Sequence)
 		fmt.Printf("Parents: %d\n", header.NumParents)
 		fmt.Printf("\n")
 	}
 
-	const spkiHashLen = 32
-
 	for len(c) > 0 {
+		const spkiHashLen = 32
 		if len(c) < spkiHashLen {
 			fmt.Fprintf(os.Stderr, "CRLSet truncated at SPKI hash\n")
 			return false
@@ -341,8 +321,55 @@ func dump(filename string, certificateFilename string) bool {
 	return true
 }
 
+func dumpSPKIs(filename string) bool {
+	header, _, ok := getHeader(filename)
+	if !ok {
+		return false
+	}
+
+	for _, spki := range header.BlockedSPKIs {
+		spkiBytes, err := base64.StdEncoding.DecodeString(spki)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "CRLSet has an invalid blocked SPKI")
+		}
+		fmt.Printf("%s\n", hex.EncodeToString(spkiBytes))
+	}
+
+	return true
+}
+
+func getHeader(filename string) (header crlSetHeader, rest []byte, ok bool) {
+	c, err := ioutil.ReadFile(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to read CRLSet: %s\n", err)
+		return
+	}
+
+	if len(c) < 2 {
+		fmt.Fprintf(os.Stderr, "CRLSet truncated at header length\n")
+		return
+	}
+
+	headerLen := int(c[0]) | int(c[1])<<8
+	c = c[2:]
+
+	if len(c) < headerLen {
+		fmt.Fprintf(os.Stderr, "CRLSet truncated at header\n")
+		return
+	}
+	headerBytes := c[:headerLen]
+	c = c[headerLen:]
+
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse header: %s", err)
+		return
+	}
+
+	return header, c, true
+}
+
 func usage() {
-	fmt.Fprintf(os.Stderr, "%s: { fetch | dump <filename> [<cert filename>] }\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "%s: { fetch | dumpSPKIs <filename> | dump <filename> [<cert filename>] }\n", os.Args[0])
 }
 
 func main() {
@@ -367,6 +394,11 @@ func main() {
 		} else if len(os.Args) == 4 {
 			needUsage = false
 			result = dump(os.Args[2], os.Args[3])
+		}
+	case "dumpSPKIs":
+		if len(os.Args) == 3 {
+			needUsage = false
+			result = dumpSPKIs(os.Args[2])
 		}
 	}
 
