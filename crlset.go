@@ -8,9 +8,6 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -59,10 +56,10 @@ const crlSetAppId = "hfnkpimlhhgieaddgfemjhofmfblmnib"
 // information can be fetched.
 func buildVersionRequestURL() string {
 	args := url.Values(make(map[string][]string))
-	args.Add("x", "id="+crlSetAppId+"&v=&uc")
+	args.Add("x", "id="+crlSetAppId+"&v=&uc"+"&acceptformat=crx3")
 
 	return (&url.URL{
-		Scheme:   "http",
+		Scheme:   "https",
 		Host:     "clients2.google.com",
 		Path:     "/service/update2/crx",
 		RawQuery: args.Encode(),
@@ -71,10 +68,9 @@ func buildVersionRequestURL() string {
 
 // crxHeader reflects the binary header of a CRX file.
 type crxHeader struct {
-	Magic       [4]byte
-	Version     uint32
-	PubKeyBytes uint32
-	SigBytes    uint32
+	Magic     [4]byte
+	Version   uint32
+	HeaderLen uint32
 }
 
 // zipReader is a small wrapper around a []byte which implements ReaderAt.
@@ -142,64 +138,19 @@ func fetch() bool {
 		return false
 	}
 
-	if !bytes.Equal(header.Magic[:], []byte("Cr24")) ||
-		int(header.PubKeyBytes) < 0 ||
-		int(header.SigBytes) < 0 {
+	if !bytes.Equal(header.Magic[:], []byte("Cr24")) || int(header.HeaderLen) < 0 {
 		fmt.Fprintf(os.Stderr, "Downloaded file doesn't look like a CRX\n")
 		return false
 	}
 
-	pubKeyBytes := crx.Next(int(header.PubKeyBytes))
-	sigBytes := crx.Next(int(header.SigBytes))
-
-	if len(pubKeyBytes) != int(header.PubKeyBytes) ||
-		len(sigBytes) != int(header.SigBytes) {
+	protoHeader := crx.Next(int(header.HeaderLen))
+	if len(protoHeader) != int(header.HeaderLen) {
 		fmt.Fprintf(os.Stderr, "Downloaded file doesn't look like a CRX\n")
-		return false
-	}
-
-	pubKey, err := x509.ParsePKIXPublicKey(pubKeyBytes)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse public key: %s\n", err)
-		return false
-	}
-	rsaPubKey, ok := pubKey.(*rsa.PublicKey)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Not signed with an RSA key\n")
-		return false
-	}
-
-	h := sha256.New()
-	h.Write(pubKeyBytes)
-	pubKeyHash := fmt.Sprintf("%x", h.Sum(nil)[:16])
-	tweakedPubKeyHash := make([]byte, len(pubKeyHash))
-
-	// AppIds use a different hex character set so we convert our hash into
-	// it.
-	for i := range pubKeyHash {
-		if pubKeyHash[i] < 97 {
-			tweakedPubKeyHash[i] = pubKeyHash[i] + 49
-		} else {
-			tweakedPubKeyHash[i] = pubKeyHash[i] + 10
-		}
-	}
-
-	if string(tweakedPubKeyHash) != crlSetAppId {
-		fmt.Fprintf(os.Stderr, "Public key mismatch (%s)\n", tweakedPubKeyHash)
 		return false
 	}
 
 	zipBytes := crx.Bytes()
-
-	sha1Hash := sha1.New()
-	sha1Hash.Write(zipBytes)
-
-	if err := rsa.VerifyPKCS1v15(rsaPubKey, crypto.SHA1, sha1Hash.Sum(nil), sigBytes); err != nil {
-		fmt.Fprintf(os.Stderr, "Signature verification failure: %s\n", err)
-		return false
-	}
-
-	zipReader := zipReader(zipBytes)
+	zipReader := zipReader(crx.Bytes())
 
 	z, err := zip.NewReader(zipReader, int64(len(zipBytes)))
 	if err != nil {
