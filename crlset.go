@@ -8,12 +8,11 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"encoding/xml"
@@ -57,10 +56,10 @@ const crlSetAppId = "hfnkpimlhhgieaddgfemjhofmfblmnib"
 // information can be fetched.
 func buildVersionRequestURL() string {
 	args := url.Values(make(map[string][]string))
-	args.Add("x", "id="+crlSetAppId+"&v=&uc")
+	args.Add("x", "id="+crlSetAppId+"&v=&uc"+"&acceptformat=crx3")
 
 	return (&url.URL{
-		Scheme:   "http",
+		Scheme:   "https",
 		Host:     "clients2.google.com",
 		Path:     "/service/update2/crx",
 		RawQuery: args.Encode(),
@@ -69,10 +68,9 @@ func buildVersionRequestURL() string {
 
 // crxHeader reflects the binary header of a CRX file.
 type crxHeader struct {
-	Magic       [4]byte
-	Version     uint32
-	PubKeyBytes uint32
-	SigBytes    uint32
+	Magic     [4]byte
+	Version   uint32
+	HeaderLen uint32
 }
 
 // zipReader is a small wrapper around a []byte which implements ReaderAt.
@@ -140,64 +138,19 @@ func fetch() bool {
 		return false
 	}
 
-	if !bytes.Equal(header.Magic[:], []byte("Cr24")) ||
-		int(header.PubKeyBytes) < 0 ||
-		int(header.SigBytes) < 0 {
+	if !bytes.Equal(header.Magic[:], []byte("Cr24")) || int(header.HeaderLen) < 0 {
 		fmt.Fprintf(os.Stderr, "Downloaded file doesn't look like a CRX\n")
 		return false
 	}
 
-	pubKeyBytes := crx.Next(int(header.PubKeyBytes))
-	sigBytes := crx.Next(int(header.SigBytes))
-
-	if len(pubKeyBytes) != int(header.PubKeyBytes) ||
-		len(sigBytes) != int(header.SigBytes) {
+	protoHeader := crx.Next(int(header.HeaderLen))
+	if len(protoHeader) != int(header.HeaderLen) {
 		fmt.Fprintf(os.Stderr, "Downloaded file doesn't look like a CRX\n")
-		return false
-	}
-
-	pubKey, err := x509.ParsePKIXPublicKey(pubKeyBytes)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse public key: %s\n", err)
-		return false
-	}
-	rsaPubKey, ok := pubKey.(*rsa.PublicKey)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Not signed with an RSA key\n")
-		return false
-	}
-
-	h := sha256.New()
-	h.Write(pubKeyBytes)
-	pubKeyHash := fmt.Sprintf("%x", h.Sum(nil)[:16])
-	tweakedPubKeyHash := make([]byte, len(pubKeyHash))
-
-	// AppIds use a different hex character set so we convert our hash into
-	// it.
-	for i := range pubKeyHash {
-		if pubKeyHash[i] < 97 {
-			tweakedPubKeyHash[i] = pubKeyHash[i] + 49
-		} else {
-			tweakedPubKeyHash[i] = pubKeyHash[i] + 10
-		}
-	}
-
-	if string(tweakedPubKeyHash) != crlSetAppId {
-		fmt.Fprintf(os.Stderr, "Public key mismatch (%s)\n", tweakedPubKeyHash)
 		return false
 	}
 
 	zipBytes := crx.Bytes()
-
-	sha1Hash := sha1.New()
-	sha1Hash.Write(zipBytes)
-
-	if err := rsa.VerifyPKCS1v15(rsaPubKey, crypto.SHA1, sha1Hash.Sum(nil), sigBytes); err != nil {
-		fmt.Fprintf(os.Stderr, "Signature verification failure: %s\n", err)
-		return false
-	}
-
-	zipReader := zipReader(zipBytes)
+	zipReader := zipReader(crx.Bytes())
 
 	z, err := zip.NewReader(zipReader, int64(len(zipBytes)))
 	if err != nil {
@@ -232,11 +185,17 @@ func fetch() bool {
 
 // crlSetHeader is used to parse the JSON header found in CRLSet files.
 type crlSetHeader struct {
-	Sequence   int
-	NumParents int
+	Sequence     int
+	NumParents   int
+	BlockedSPKIs []string
 }
 
-func dump(filename string, certificateFilename string) bool {
+func dump(filename, certificateFilename string) bool {
+	header, c, ok := getHeader(filename)
+	if !ok {
+		return false
+	}
+
 	var spki []byte
 	if len(certificateFilename) > 0 {
 		certBytes, err := ioutil.ReadFile(certificateFilename)
@@ -263,42 +222,14 @@ func dump(filename string, certificateFilename string) bool {
 		spki = h.Sum(nil)
 	}
 
-	c, err := ioutil.ReadFile(filename)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to read CRLSet: %s\n", err)
-		return false
-	}
-
-	if len(c) < 2 {
-		fmt.Fprintf(os.Stderr, "CRLSet truncated at header length\n")
-		return false
-	}
-
-	headerLen := int(c[0]) | int(c[1])<<8
-	c = c[2:]
-
-	if len(c) < headerLen {
-		fmt.Fprintf(os.Stderr, "CRLSet truncated at header\n")
-		return false
-	}
-	headerBytes := c[:headerLen]
-	c = c[headerLen:]
-
-	var header crlSetHeader
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse header: %s", err)
-		return false
-	}
-
 	if len(spki) == 0 {
 		fmt.Printf("Sequence: %d\n", header.Sequence)
 		fmt.Printf("Parents: %d\n", header.NumParents)
 		fmt.Printf("\n")
 	}
 
-	const spkiHashLen = 32
-
 	for len(c) > 0 {
+		const spkiHashLen = 32
 		if len(c) < spkiHashLen {
 			fmt.Fprintf(os.Stderr, "CRLSet truncated at SPKI hash\n")
 			return false
@@ -341,8 +272,55 @@ func dump(filename string, certificateFilename string) bool {
 	return true
 }
 
+func dumpSPKIs(filename string) bool {
+	header, _, ok := getHeader(filename)
+	if !ok {
+		return false
+	}
+
+	for _, spki := range header.BlockedSPKIs {
+		spkiBytes, err := base64.StdEncoding.DecodeString(spki)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "CRLSet has an invalid blocked SPKI")
+		}
+		fmt.Printf("%s\n", hex.EncodeToString(spkiBytes))
+	}
+
+	return true
+}
+
+func getHeader(filename string) (header crlSetHeader, rest []byte, ok bool) {
+	c, err := ioutil.ReadFile(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to read CRLSet: %s\n", err)
+		return
+	}
+
+	if len(c) < 2 {
+		fmt.Fprintf(os.Stderr, "CRLSet truncated at header length\n")
+		return
+	}
+
+	headerLen := int(c[0]) | int(c[1])<<8
+	c = c[2:]
+
+	if len(c) < headerLen {
+		fmt.Fprintf(os.Stderr, "CRLSet truncated at header\n")
+		return
+	}
+	headerBytes := c[:headerLen]
+	c = c[headerLen:]
+
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse header: %s", err)
+		return
+	}
+
+	return header, c, true
+}
+
 func usage() {
-	fmt.Fprintf(os.Stderr, "%s: { fetch | dump <filename> [<cert filename>] }\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "%s: { fetch | dumpSPKIs <filename> | dump <filename> [<cert filename>] }\n", os.Args[0])
 }
 
 func main() {
@@ -367,6 +345,11 @@ func main() {
 		} else if len(os.Args) == 4 {
 			needUsage = false
 			result = dump(os.Args[2], os.Args[3])
+		}
+	case "dumpSPKIs":
+		if len(os.Args) == 3 {
+			needUsage = false
+			result = dumpSPKIs(os.Args[2])
 		}
 	}
 
