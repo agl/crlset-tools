@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
+	"strings"
 )
 
 // update and the related structures are used for parsing the XML response from Omaha. The response looks like:
@@ -185,9 +187,11 @@ func fetch() bool {
 
 // crlSetHeader is used to parse the JSON header found in CRLSet files.
 type crlSetHeader struct {
-	Sequence     int
-	NumParents   int
-	BlockedSPKIs []string
+	Sequence                 int
+	NumParents               int
+	BlockedSPKIs             []string
+	KnownInterceptionSPKIs   []string
+	BlockedInterceptionSPKIs []string
 }
 
 func dump(filename, certificateFilename string) bool {
@@ -278,12 +282,26 @@ func dumpSPKIs(filename string) bool {
 		return false
 	}
 
-	for _, spki := range header.BlockedSPKIs {
-		spkiBytes, err := base64.StdEncoding.DecodeString(spki)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "CRLSet has an invalid blocked SPKI")
+	headerStruct := reflect.ValueOf(&header).Elem()
+	for i := 0; i < headerStruct.NumField(); i++ {
+		fieldName := headerStruct.Type().Field(i).Name
+		if strings.Contains(fieldName, "SPKIs") {
+			fieldType := headerStruct.Type().Field(i).Type
+			if fieldType != reflect.SliceOf(reflect.TypeOf("")) {
+				fmt.Fprintf(os.Stderr, "field %s is a %s and not the expected []string\n", fieldName, fieldType)
+				continue
+			}
+
+			spkis := headerStruct.Field(i).Interface().([]string)
+			for _, spki := range spkis {
+				spkiBytes, err := base64.StdEncoding.DecodeString(spki)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s is not a valid SPKI\n", spki)
+				}
+				fmt.Printf("%s:%s\n", fieldName, hex.EncodeToString(spkiBytes))
+			}
+
 		}
-		fmt.Printf("%s\n", hex.EncodeToString(spkiBytes))
 	}
 
 	return true
