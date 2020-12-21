@@ -282,25 +282,30 @@ func dumpSPKIs(filename string) bool {
 		return false
 	}
 
-	headerStruct := reflect.ValueOf(&header).Elem()
+	stringSliceType := reflect.SliceOf(reflect.TypeOf(""))
+	headerStruct := reflect.ValueOf(header)
+
 	for i := 0; i < headerStruct.NumField(); i++ {
-		fieldName := headerStruct.Type().Field(i).Name
-		if strings.Contains(fieldName, "SPKIs") {
-			fieldType := headerStruct.Type().Field(i).Type
-			if fieldType != reflect.SliceOf(reflect.TypeOf("")) {
-				fmt.Fprintf(os.Stderr, "field %s is a %s and not the expected []string\n", fieldName, fieldType)
+		fieldType := headerStruct.Type().Field(i)
+		fieldName := fieldType.Name
+
+		if !strings.HasSuffix(fieldName, "SPKIs") {
+			continue
+		}
+
+		if typ := fieldType.Type; typ != stringSliceType {
+			fmt.Fprintf(os.Stderr, "field %q is a %s and not the expected []string\n", fieldName, typ)
+			continue
+		}
+
+		spkis := headerStruct.Field(i).Interface().([]string)
+		for _, spki := range spkis {
+			spkiBytes, err := base64.StdEncoding.DecodeString(spki)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s is not a valid SPKI\n", spki)
 				continue
 			}
-
-			spkis := headerStruct.Field(i).Interface().([]string)
-			for _, spki := range spkis {
-				spkiBytes, err := base64.StdEncoding.DecodeString(spki)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s is not a valid SPKI\n", spki)
-				}
-				fmt.Printf("%s:%s\n", fieldName, hex.EncodeToString(spkiBytes))
-			}
-
+			fmt.Printf("%s:%s\n", fieldName, hex.EncodeToString(spkiBytes))
 		}
 	}
 
