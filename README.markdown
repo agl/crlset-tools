@@ -12,6 +12,12 @@ First you need to download the current CRL set:
     % ./crlset fetch > crl-set
     Downloading CRLSet version 59
 
+By default this fetches the full CRL set, but if you want to instead fetch the
+lighter-weight CRL set intended for low-memory devices, you can instead run:
+
+    % ./crlset fetch -androidlowmem > crl-set
+    Downloading CRLSet version 59
+
 Then you can dump the contents of the CRL set:
 
     % ./crlset dump crl-set
